@@ -90,12 +90,12 @@ data_anes <- read.dta("./ANES/anes_timeseries_2016_Stata12.dta")
     mutate(female = make_dummy(gender, on_vals = "Female"))  %>%
     # Education
     mutate(educ_cat = recode(as.numeric(educ),
-                             `1` = 0L,
-                             `2` = 1L,
-                             `3` = 2L,
-                             `4` = 2L,
-                             `5` = 3L,
-                             `6` = 4L,
+                             `1` = 0L, # no HS
+                             `2` = 1L, # high school grad = 1
+                             `3` = 2L, # some college = 2
+                             `4` = 2L, # 2-year = 2
+                             `5` = 3L, # 4-year = 3
+                             `6` = 4L, # post-grad = 4
                              .default = NA_integer_,
                              .missing = NA_integer_ ))  %>%
     # Race
@@ -304,7 +304,7 @@ data_anes <- read.dta("./ANES/anes_timeseries_2016_Stata12.dta")
                                 `7` = "4. Other",
                                 .default = NA_character_,
                                 .missing = NA_character_)) %>%
-    mutate(minority = make_dummy(V161310x, 
+    mutate(minority = make_dummy(race_factor, 
                 on_vals = c("2. Black", "3. Hispanic", "4. Other"))) %>%
     dplyr::select(-race_factor) %>%
     mutate(married = make_dummy(as.numeric(V161268), 
@@ -330,7 +330,7 @@ data_anes <- read.dta("./ANES/anes_timeseries_2016_Stata12.dta")
     
     mutate(interest = reverse_code(as.numeric(V162256),
                                    na_vals = c(1, 2, 3, 4))) %>%
-    mutate(income = recode(as.integer(V161361x),
+    mutate(income = recode(as.numeric(V161361x),
                            `1` = NA_integer_,
                            `2` = NA_integer_,
                            .missing = NA_integer_) -2)  %>%
@@ -379,6 +379,9 @@ data_anes <- read.dta("./ANES/anes_timeseries_2016_Stata12.dta")
     mutate(anes.pri.es = make_dummy(V161021a, 
                                     on_vals=c("1. Hillary Clinton", "7. Marco Rubio", "6. John Kasich"), 
                                     na_vals = c("-8. Don't know (FTF only)", "-9. Refused"))) %>%
+    mutate(anes.pri.part = make_dummy(V161021,
+                                      on_vals = c("1. Yes, voted in primary or caucus"),
+                                      na_vals = c("-9. Refused", "-8. Don't know (FTF only)"))) %>%
     mutate(part.meeting = make_dummy(as.numeric(V162011), 
                                      on_vals = 4, na_vals = c(1, 2, 3))) %>%
     mutate(part.work = make_dummy(as.numeric(V162013), 
@@ -389,10 +392,8 @@ data_anes <- read.dta("./ANES/anes_timeseries_2016_Stata12.dta")
       age:part.donate) #%>%
 }
 
-# Keep only relevant things now
-keep(d.cces, d.anes, percent_missing, ggplot_missing, sure=TRUE)
+# Missingness ------------------------------------------------------------------
 
-# Machine Learning -------------------------------------------------------------
 d.cces.mod <- subset(d.cces, select = c(cces.pri.es, cces.pri.ae,
                                         psi, female, minority, married,
                                         party.strength, ideo.strength, 
@@ -402,19 +403,20 @@ d.anes.mod <- subset(d.anes, select = c(anes.pri.es, anes.pri.ae,
                                         female, minority, married,
                                         party.strength, ideo.strength, 
                                         partyagree, church_freq, 
-                                        interest, income, educ_cat))
+                                        interest, income, educ_cat,
+                                        anes.pri.part))
 
 # check missingness in each variable
 apply(d.cces.mod,2,percent_missing)
 apply(d.anes.mod,2,percent_missing)
 
 # let's use MICE to impute
-tempdata1 <- mice(d.cces.mod, m = 5, maxit = 50, meth = "rf", 
-                 seed = 32308, print = FALSE)
+tempdata1 <- mice(d.cces.mod, m = 5, maxit = 20, meth = "rf", 
+                  seed = 32308, print = FALSE)
 mice_output1 <- complete(tempdata1)
 
-tempdata2 <- mice(d.anes.mod, m = 5, maxit = 50, meth = "rf", 
-                 seed = 32308, print = FALSE)
+tempdata2 <- mice(d.anes.mod, m = 5, maxit = 20, meth = "rf", 
+                  seed = 32308, print = FALSE)
 mice_output2 <- complete(tempdata2)
 beep(3)
 
@@ -436,27 +438,33 @@ d.cces <- complete(tempdata1)
 d.anes <- complete(tempdata2)
 
 # keep only what we need, again
-keep(d.cces, d.anes)
+keep(d.cces, d.anes, sure = TRUE)
+# write this so I don't have to keep imputing over and over
+save.image("~/Documents/Dissertation/Analysis/DissChapTwoPostImputation.RData")
 
-# we don't need these for building our machine learning models
-omit <- c("cces.pri.es", "cces.pri.ae")
-d.learn <- as.data.frame(dplyr::select(d.cces, -which(names(d.cces)%in%omit)))
+# Machine Learning -------------------------------------------------------------
+rm(list = ls())
+load("~/Documents/Dissertation/Analysis/DissChapTwoPostImputation.RData")
 
 
 # let's split data into training and test sets
 set.seed(32308)
 split1 <- createDataPartition(d.cces$psi, p = .75)[[1]]
 train.data <- d.cces[split1,]
-valid.data <- d.cces[-split1,]
-train.x <- as.data.frame(dplyr::select(train.data, -psi))
+test.data <- d.cces[-split1,]
+
+train.x <- as.data.frame(dplyr::select(train.data, -c(psi, cces.pri.es, cces.pri.ae)))
 train.y <- train.data$psi
-test.x <- as.data.frame(dplyr::select(valid.data, -psi))
-test.y <- valid.data$psi
+test.x <- as.data.frame(dplyr::select(test.data, -c(psi, cces.pri.es, cces.pri.ae)))
+test.y <- test.data$psi
 
 ctrl<-trainControl(method = "repeatedcv",
                    n = 10, verboseIter = FALSE,
                    repeats = 5,
                    savePredictions = "final")
+
+# run an elastic net too
+
 
 set.seed(32308)
 train_lm <- train(y=train.y, x=train.x,
@@ -465,7 +473,20 @@ train_lm <- train(y=train.y, x=train.x,
                   metric="RMSE")
 
 set.seed(32308)
+train_lm2 <- train(y=train.y, x=dplyr::select(train.x, -partyagree),
+                  trControl=ctrl,
+                  method="lm",
+                  metric="RMSE")
+
+set.seed(32308)
 train_cart <- train(y=train.y, x=train.x,
+                    trControl=ctrl,
+                    tuneLength=10,
+                    method="rpart",
+                    metric="RMSE")
+
+set.seed(32308)
+train_cart2 <- train(y=train.y, x=dplyr::select(train.x, -partyagree),
                     trControl=ctrl,
                     tuneLength=10,
                     method="rpart",
@@ -483,11 +504,25 @@ train_nnet <- train(y=train.y, x=train.x,
                     method = "avNNet",
                     metric = "RMSE"); beep(3)
 
+train_nnet2 <- train(y=train.y, x=dplyr::select(train.x, -partyagree),
+                    tuneGrid = nnetGrid,
+                    trControl = ctrl,
+                    linout = TRUE,
+                    trace = FALSE,
+                    method = "avNNet",
+                    metric = "RMSE"); beep(3)
+
 set.seed(32308)
 train_knn <- train(y=train.y, x=train.x,
                     trControl = ctrl,
                     method = "knn",
                     metric = "RMSE")
+
+set.seed(32308)
+train_knn2 <- train(y=train.y, x=dplyr::select(train.x, -partyagree),
+                   trControl = ctrl,
+                   method = "knn",
+                   metric = "RMSE")
 
 set.seed(32308)
 train_rf <- train(y=train.y, x=train.x,
@@ -497,14 +532,28 @@ train_rf <- train(y=train.y, x=train.x,
                   metric = "RMSE",
                   trControl = ctrl,
                   importance = TRUE)
+set.seed(32308)
+train_rf2 <- train(y = train.y, x = dplyr::select(train.x, -partyagree),
+                   method = "rf",
+                   tuneLength = 10,
+                   ntrees = 1000,
+                   metric = "RMSE",
+                   trControl = ctrl,
+                   importance = TRUE)
 
 set.seed(32308)
 train_cf <- train(y=train.y, x=train.x,
                   method = "cforest",
-                  tuneLength = 10,
+                  tuneLength = 9,
                   metric = "RMSE",
-                  trControl = ctrl,
-                  importance = TRUE)
+                  trControl = ctrl)
+
+set.seed(32308)
+train_cf2 <- train(y=train.y, x=dplyr::select(train.x, -partyagree),
+                  method = "cforest",
+                  tuneLength = 8,
+                  metric = "RMSE",
+                  trControl = ctrl)
 
 train_models<-lapply(ls(pattern="train_"), get)
 allResamples <- resamples(list("Linear Reg" = train_lm,
@@ -512,7 +561,13 @@ allResamples <- resamples(list("Linear Reg" = train_lm,
                                "Neural Net" = train_nnet,
                                "K-Nearest" = train_knn,
                                "Random Forest" = train_rf,
-                               "C Forest" = train_cf))
+                               "C Forest" = train_cf,
+                               "Linear Reg 2" = train_lm2,
+                               "CART 2" = train_cart2,
+                               "Neural Net 2" = train_nnet2,
+                               "K-Nearest 2" = train_knn2,
+                               "Random Forest 2" = train_rf2,
+                               "C Forest 2" = train_cf2))
 
 parallelplot(allResamples, metric = "RMSE")
 parallelplot(allResamples, metric = "Rsquared")
@@ -522,44 +577,71 @@ preds.rf <- predict(train_rf,
                       newdata = test.x,
                       type = "raw")
 
+preds.rf2 <- predict(train_rf2,
+                     newdata = test.x, 
+                     type = "raw")
+
 preds.cf <- predict(train_cf, newdata = test.x)
 
-RMSE(preds.rf, test.y)
+preds.cart  <- predict(train_cart, newdata = test.x)
+preds.cart2 <- predict(train_cart2, newdata = test.x)
+
+RMSE(preds.rf, test.y) # with all predictors
+RMSE(preds.rf2, test.y) # dropping the partyagreement predictor
 RMSE(preds.cf, test.y)
+RMSE(preds.cart, test.y)
+RMSE(preds.cart2, test.y)
+
+R2(preds.rf, test.y) # with all predictors
+R2(preds.rf2, test.y) # dropping the partyagreement predictor
+R2(preds.cf, test.y)
+R2(preds.cart, test.y)
+R2(preds.cart2, test.y)
 
 
-plot(preds.rf, test.y,
+plot(preds.cf, test.y,
+     xlim = c(0,16), ylim = c(0,16))
+plot(preds.rf2, test.y,
      xlim = c(0,16), ylim = c(0,16))
 plot(preds.cf, test.y,
      xlim = c(0,16), ylim = c(0,16))
 
 varImp(train_rf$finalModel)
+varImp(train_rf2$finalModel)
 
+dotPlot(rf_imp)
 
-## Misc ####
+d.anes$psi <- predict(train_cf, newdata = d.anes)
+d.anes$psi2 <- predict(train_cart2, newdata = d.anes)
+
+### Misc ####
+
+plot(jitter(d.cces$party.strength, 0.5), jitter(d.cces$psi, 1),
+     xlab = "Party ID Strength", ylab = "Partisan Social Identity",
+     main = "Jitter Plot of PID Strength and Partisan Social Identity")
 
 plot(jitter(d.anes$party.strength, 0.5), jitter(d.anes$psi, 1),
      xlab = "Party ID Strength", ylab = "Partisan Social Identity",
      main = "Jitter Plot of PID Strength and Partisan Social Identity")
 
-plot(jitter(d.anes$ideo.strength, 0.5), jitter(d.anes$isi, 1),
-     xlab = "Ideological ID Strength", ylab = "Ideological Social Identity",
-     main = "Jitter Plot of Ideological Strength and Ideological Social Identity")
-
 ## Logit Models
 
+keep(d.anes, d.cces, train_cart2, train_cf, sure = TRUE)
+
 ### Main Results
-mod.anes.es1 <- glm(anes.pri.es ~ female + minority + married + party.strength + 
-                      ideo.strength + partyagree + church_freq + interest + 
-                      income + educ_cat,
-                    data=d.anes, family = binomial(link = "logit"))
+mod.anes.es1 <- glm(anes.pri.es ~ female + minority + married + party.strength + ideo.strength + partyagree + church_freq + interest + income + educ_cat,
+                    data=d.anes[d.anes$anes.pri.part==1,], family = binomial(link = "logit"))
 mod.anes.es2 <- glm(anes.pri.es ~ psi + female + minority + married + party.strength + ideo.strength + partyagree + church_freq + interest + income + educ_cat,
-                    data=d.anes, family = binomial(link = "logit"))
+                    data=d.anes[d.anes$anes.pri.part==1,], family = binomial(link = "logit"))
+mod.anes.es3 <- glm(anes.pri.es ~ psi2 + female + minority + married + party.strength + ideo.strength + partyagree + church_freq + interest + income + educ_cat,
+                    data=d.anes[d.anes$anes.pri.part==1,], family = binomial(link = "logit"))
 
 mod.anes.ae1 <- glm(anes.pri.ae ~ female + minority + married + party.strength + ideo.strength + partyagree + church_freq + interest + income + educ_cat,
-                    data=d.anes, family = binomial(link = "logit"))
+                    data=d.anes[d.anes$anes.pri.part==1,], family = binomial(link = "logit"))
 mod.anes.ae2 <- glm(anes.pri.ae ~ psi + female + minority + married + party.strength + ideo.strength + partyagree + church_freq + interest + income + educ_cat,
-                    data=d.anes, family = binomial(link = "logit"))
+                    data=d.anes[d.anes$anes.pri.part==1,], family = binomial(link = "logit"))
+mod.anes.ae3 <- glm(anes.pri.ae ~ psi2 + female + minority + married + party.strength + ideo.strength + partyagree + church_freq + interest + income + educ_cat,
+                    data=d.anes[d.anes$anes.pri.part==1,], family = binomial(link = "logit"))
 
 lr.es <- lrtest(mod.anes.es1, mod.anes.es2)
 lr.ae <- lrtest(mod.anes.ae1, mod.anes.ae2)
@@ -567,12 +649,19 @@ lr.ae <- lrtest(mod.anes.ae1, mod.anes.ae2)
 texreg(l=list(mod.anes.es1, mod.anes.es2, mod.anes.ae1, mod.anes.ae2), 
        stars = numeric(0), bold = 0.05, single.row = TRUE, caption.above = TRUE, 
        caption = "Candidate Preference in the 2016 Primary Elections",
-       include.aic = FALSE, include.lr = TRUE, include.bic = FALSE, include.deviance = FALSE, label = NULL,
-       custom.coef.map = list('psi' = "Partisan Social Identity", 
+       include.aic = FALSE, include.lr = TRUE, include.bic = FALSE, include.deviance = FALSE,
+       custom.coef.map = list('psi' = "Partisan Social Identity", 'psi2' = "Partisan Social Identity",
                               'party.strength' = "Party ID Strength", 'ideo.strength' = "Ideology Strength", 'partyagree' = "Party Agreement",
                               'female' = "Female?", 'minority' = "Minority?", 'married' = "Married?", 
                               'church_freq' = "Church Frequency", 
                               'interest' = "Political Interest", 'income' = "Income", 'educ_cat' = 'Education', 
                               '(Intercept)' = "Intercept"),
+       label = "anesmlresults",
        custom.note = "Coefficients significant at the p = 0.05 level are bolded.",
-       custom.model.names = c("Establishment", "Establishment", "Anti-Establishment", "Anti-Establishment"))
+       custom.model.names = c("Establishment", "Establishment","Anti-Establishment", "Anti-Establishment"))
+
+keep(d.anes, d.cces, train_rf, train_rf2, 
+     mod.anes.es1, mod.anes.es2, mod.anes.es3, 
+     mod.anes.ae1, mod.anes.ae2, mod.anes.ae3, sure=TRUE)
+
+save.image("~/Documents/Dissertation/Analysis/DissChapTwoPostML.RData")
