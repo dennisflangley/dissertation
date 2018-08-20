@@ -1,2 +1,2 @@
 # dissertation
-A repository of up-to-date dissertation files
+Outdated dissertation files, needs updating.
